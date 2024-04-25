@@ -1,0 +1,167 @@
+from google.colab import drive
+drive.mount('/content/drive')
+import numpy as np
+import pandas as pd
+from imblearn.over_sampling import SMOTE
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
+from keras.models import Model
+from keras.layers import Dense, BatchNormalization, Input
+from keras import regularizers
+from sklearn.utils import shuffle
+
+
+import tensorflow as tf
+
+# Set seeds for reproducibility
+np.random.seed(42)
+tf.random.set_seed(42)
+
+# Load and preprocess data
+df = pd.read_csv('/content/drive/My Drive/Data/ant-1.7.csv')
+df[df.columns[-1]] = df[df.columns[-1]].apply(lambda x: 1 if x != 0 else 0)
+target = df[df.columns[-1]]
+features1 = df.drop(df.columns[-1], axis=1)
+features = features1.drop(features1.columns[0:3], axis=1)
+
+# Split data into training and test sets
+x_train, x_test, y_train, y_test = train_test_split(features, target, test_size=0.15, stratify=target)
+
+# Apply SMOTE to balance class distribution
+smote = SMOTE(random_state=42)
+x_train_resampled, y_train_resampled = smote.fit_resample(x_train, y_train)
+
+# Apply Min-Max scaling to features
+scaler = MinMaxScaler()
+x_train_resampled_scaled = scaler.fit_transform(x_train_resampled)
+x_test_scaled = scaler.transform(x_test)
+
+# Define autoencoder architecture
+input_layer = Input(shape=x_train_resampled_scaled.shape[1:])
+encoded = Dense(100, activation='sigmoid', activity_regularizer=regularizers.l1(10e-5))(input_layer)
+encoded = BatchNormalization()(encoded)
+encoded = Dense(75, activation='sigmoid')(encoded)
+encoded = BatchNormalization()(encoded)
+encoded = Dense(50, activation='sigmoid')(encoded)
+encoded = BatchNormalization()(encoded)
+encoded = Dense(25, activation='sigmoid')(encoded)
+encoded = BatchNormalization()(encoded)
+encoded = Dense(10, activation='sigmoid')(encoded)
+decoded = Dense(10, activation='sigmoid')(encoded)
+decoded = BatchNormalization()(decoded)
+decoded = Dense(25, activation='sigmoid')(decoded)
+decoded = BatchNormalization()(decoded)
+decoded = Dense(50, activation='sigmoid')(decoded)
+decoded = BatchNormalization()(decoded)
+decoded = Dense(75, activation='sigmoid')(decoded)
+decoded = BatchNormalization()(decoded)
+decoded = Dense(100, activation='sigmoid')(decoded)
+output_layer = Dense(x_train_resampled_scaled.shape[1], activation='sigmoid')(decoded)
+
+autoencoder = Model(input_layer, output_layer)
+autoencoder.compile(optimizer="adadelta", loss="mse", metrics=['accuracy'])
+
+# Shuffle the training data before each epoch
+x_train_resampled_scaled, y_train_resampled = shuffle(x_train_resampled_scaled, y_train_resampled)
+
+# Train autoencoder on entire training dataset
+autoencoder.fit(x_train_resampled_scaled, x_train_resampled_scaled, batch_size=15, epochs=100, shuffle=True, validation_split=0.20)
+
+# Create encoder model
+encoder = Model(inputs=input_layer, outputs=encoded)
+
+# Get feature names
+feature_names = x_train.columns
+
+
+# Specify the number of top features to display for each neuron
+top_n_features = 10
+
+from collections import Counter
+
+# Create a Counter to count occurrences of each metric
+metric_counter = Counter()
+
+# Iterate over the first 10 neurons in the bottleneck layer
+for i in range(10):
+    # Get the weights for the current neuron
+    weights, biases = encoder.layers[-3].get_weights()
+    neuron_weights = weights.T[i]
+
+    # Sort the features based on their weights
+    sorted_features = sorted(zip(feature_names, neuron_weights), key=lambda x: abs(x[1]), reverse=True)[:top_n_features]
+
+    # Update the Counter based on the current neuron's features
+    neuron_metrics = [feature for feature, _ in sorted_features]
+    metric_counter.update(neuron_metrics)
+
+    # Print the sorted features for the current neuron
+    print(f"\nTop {top_n_features} Features for Neuron {i + 1} Sorted by Weight:")
+    for feature, weight in sorted_features:
+        print(f"  {feature}: {weight}")
+
+###############################################################################################
+
+# Display a summary of metrics ordered by occurrence
+print("\nSummary of Metrics Ordered by Occurrence:")
+for metric, occurrence in metric_counter.most_common():
+    print(f"  {metric}: {occurrence}")
+
+# Get the top 10 metrics
+top_metrics = [metric for metric, _ in metric_counter.most_common()[:10]]
+print('tooop', top_metrics)
+
+# Specify the top metrics for binary classification
+top_metrics_for_classification = top_metrics
+
+# Encode training and test data
+x_train_encoded = encoder.predict(x_train_resampled_scaled)
+x_test_encoded = encoder.predict(x_test_scaled)
+
+# Specify the number of neurons in the bottleneck layer
+num_neurons = 10
+
+# Specify the top metrics for binary classification
+top_metrics_for_classification = top_metrics
+
+# Encode training and test data using only the top metrics
+x_train_encoded_top_metrics = x_train_encoded[:, :num_neurons]
+x_test_encoded_top_metrics = x_test_encoded[:, :num_neurons]
+
+# ... (rest of the code)
+
+# Binary classification model
+classification_input = Input(shape=(num_neurons,))
+classifier = Dense(64, activation='relu')(classification_input)
+# ... (rest of your classification model)
+# ... (rest of your classification model)
+# ... (rest of your classification model)
+classifier = BatchNormalization()(classifier)
+classifier = Dense(64, activation='relu')(classifier)
+classifier = BatchNormalization()(classifier)
+classifier = Dense(64, activation='relu')(classifier)
+classifier = BatchNormalization()(classifier)
+classifier = Dense(64, activation='tanh')(classifier)
+classifier = BatchNormalization()(classifier)
+classification_output = Dense(1, activation='sigmoid')(classifier)
+
+classification_model = Model(inputs=classification_input, outputs=classification_output)
+classification_model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+
+# Train classification model using encoded features
+classification_model.fit(x_train_encoded_top_metrics, y_train_resampled, batch_size=10, epochs=100, shuffle=True)
+
+# Encode test data for classification
+x_test_encoded_for_classification = encoder.predict(x_test_scaled)
+
+
+y_pred_probabilities = classification_model.predict(x_test_encoded_top_metrics)
+
+# Apply threshold to predict binary labels
+threshold = 0.5  # You can adjust this threshold based on your needs
+y_pred_binary = (y_pred_probabilities >= threshold).astype(int)
+from sklearn.metrics import classification_report
+
+# Evaluate classification performance
+report = classification_report(y_test, y_pred_binary)
+print(report)
